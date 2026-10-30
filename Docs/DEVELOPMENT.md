@@ -15,6 +15,30 @@ Select a working Swift toolchain with `xcode-select`. The scripts honor `SDKROOT
 
 `VERSION` supplies the app version. `BUILD_NUMBER` supplies the bundle build number. Settings reads the bundled version at runtime. Generated icons, compiler output, packaged apps, and temporary render files are excluded from Git.
 
+## Private assets
+
+Non-public development assets live in the private
+[`playmenu-private-assets`](https://github.com/heyaaakash/playmenu-private-assets)
+repository, mounted here as the `PrivateAssets/` Git submodule. The public
+repository contains only the submodule pointer and its public README; the
+assets remain private.
+
+Clone the complete project on a new laptop with:
+
+```sh
+git clone --recurse-submodules https://github.com/heyaaakash/playmenu.git
+```
+
+The GitHub account used for cloning must have access to both repositories.
+For an existing checkout, initialize or update the private assets with:
+
+```sh
+git submodule update --init --recursive
+```
+
+After cloning, commit changes in `PrivateAssets/` to the private repository
+first, then commit the updated submodule pointer in the public repository.
+
 The build queries SwiftPM for the binary directory rather than relying on a machine-specific output layout. Set `PLAYMENU_REGISTER_APP=0` (the former `SPOTMENU_REGISTER_APP` name remains accepted) in automated builds to skip refreshing Launch Services. App and ZIP verification checks the plist, signature, architecture, archive contents, and round-trip extraction. Signing is ad-hoc, without Developer ID or notarization.
 
 ## Generated output layout
