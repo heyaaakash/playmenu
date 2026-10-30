@@ -1,6 +1,7 @@
 # SwiftPM and generated app bundles
 .build/
 .swiftpm/
+# Legacy local output path; scripts now write generated output to PrivateAssets/.
 dist/
 Resources/PlayMenu.iconset/
 Resources/PlayMenu.icns

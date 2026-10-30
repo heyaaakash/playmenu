@@ -1,11 +1,12 @@
 #!/bin/zsh
-# Source after changing to the repository root. Shared release and media paths.
+# Source after changing to the repository root. Shared private output paths.
 version="$(<VERSION)"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid VERSION" >&2; exit 1; }
 architecture="${PLAYMENU_ARCH:-${SPOTMENU_ARCH:-$(uname -m)}}"
 [[ "$architecture" == arm64 || "$architecture" == x86_64 ]] || { echo "Unsupported PLAYMENU_ARCH: $architecture" >&2; exit 1; }
-# An alternate root allows isolated verification without replacing local releases.
-playmenu_dist_root="${PLAYMENU_DIST_ROOT:-${SPOTMENU_DIST_ROOT:-${PWD}/dist}}"
+# An alternate root allows isolated verification without replacing private releases.
+# The old variable names remain supported for existing local scripts.
+playmenu_dist_root="${PLAYMENU_OUTPUT_ROOT:-${PLAYMENU_DIST_ROOT:-${SPOTMENU_DIST_ROOT:-${PWD}/PrivateAssets}}}"
 playmenu_dist_root="${playmenu_dist_root:A}"
 version_dir="${playmenu_dist_root}/${version}"
 app_dir="${version_dir}/apps/${architecture}"
