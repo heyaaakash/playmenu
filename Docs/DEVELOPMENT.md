@@ -36,8 +36,11 @@ For an existing checkout, initialize or update the private assets with:
 git submodule update --init --recursive
 ```
 
-After cloning, commit changes in `PrivateAssets/` to the private repository
-first, then commit the updated submodule pointer in the public repository.
+Promotional video projects and their editable/source files are stored under
+`PrivateAssets/media/`. Generated render caches are ignored by the private
+repository. After cloning, commit changes in `PrivateAssets/` to the private
+repository first, then commit the updated submodule pointer in the public
+repository.
 
 The build queries SwiftPM for the binary directory rather than relying on a machine-specific output layout. Set `PLAYMENU_REGISTER_APP=0` (the former `SPOTMENU_REGISTER_APP` name remains accepted) in automated builds to skip refreshing Launch Services. App and ZIP verification checks the plist, signature, architecture, archive contents, and round-trip extraction. Signing is ad-hoc, without Developer ID or notarization.
 
@@ -62,19 +65,17 @@ dist/
       SHA256SUMS.txt
       BUILD_INFO.txt
       RELEASE_NOTES.md
-  media/
-    launch-video/
-    launch-video-vertical/
+  media/                      # private projects live in PrivateAssets/media/
   other/                       # other non-release deliverables, when needed
 ```
 
 `build-app.sh` replaces only the selected version/architecture app. `package.sh` replaces only that target's working ZIP and checksum. `prepare-release.sh` builds both targets and replaces only the current version's release snapshot after all checks succeed. Its release ZIPs intentionally duplicate the working packages: later single-target builds do not change an already prepared snapshot. Prior versions and media remain untouched. A local build of the same version can differ from a published artifact; release provenance and hashes identify the actual published files.
 
-Open the native app with `open "dist/$(cat VERSION)/apps/$(uname -m)/PlayMenu.app"`. Keep launch-video sources, masters, posters, captions, and media validation together under `dist/media/<project>/`. Keep other non-release deliverables under `dist/other/<task>/`. Neither area is nested under an app version or included in binary release uploads. Older versions may contain only packages or a release snapshot.
+Open the native app with `open "dist/$(cat VERSION)/apps/$(uname -m)/PlayMenu.app"`. Keep release outputs under `dist/<version>/`; private launch-video sources, masters, posters, captions, and media validation live under `PrivateAssets/media/<project>/`. Keep other non-release deliverables under `dist/other/<task>/`. Neither area is nested under an app version or included in binary release uploads. Older versions may contain only packages or a release snapshot.
 
 For isolated verification, set `PLAYMENU_DIST_ROOT` (also accepts the former `SPOTMENU_DIST_ROOT`) to a separate absolute directory before running the scripts. The same version/type layout is used there, and existing local release snapshots are preserved. All of `dist/` remains ignored by Git. Compiler caches stay in `.build/`.
 
-Existing flat outputs and `release-<version>` folders were reorganized without changing their archive bytes. Historical validation entries retain the original paths as records of the commands at that time; use the layout above to locate those files now. The launch videos are in `dist/media/`, independent of the app version. Their historical validation records may mention earlier locations.
+Existing flat outputs and `release-<version>` folders were reorganized without changing their archive bytes. Historical validation entries retain the original paths as records of the commands at that time; use the layout above to locate those files now. The launch videos are in the private `PrivateAssets/media/` submodule, independent of the app version. Their historical validation records may mention earlier locations.
 
 ## Source layout
 
