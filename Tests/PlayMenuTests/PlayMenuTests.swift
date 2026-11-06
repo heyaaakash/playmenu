@@ -330,6 +330,17 @@ private actor MockAudioCapture: AudioCapturing {
         expect(service.player.playback?.repeat_state == "off")
     }
 
+    func testSuccessfulPlayerControlsIgnoreNonJSONResponseBodies() async throws {
+        await StubNetwork.shared.reset { _ in .init(status: 200, json: "OK") }
+        let (service, _, _) = fixture(); service.player.apply(playback(song))
+        await service.next()
+        expect(service.error == nil)
+        await service.previous()
+        expect(service.error == nil)
+        let history = await StubNetwork.shared.history()
+        expect(history.map { "\($0.httpMethod ?? "") \($0.url!.path)" } == ["POST /v1/me/player/next", "POST /v1/me/player/previous"])
+    }
+
     func testAmbiguousPlayerFailuresNeverRepeatNonIdempotentCommandsLocally() {
         expect(allowsDesktopFallback(after: APIError.noDevice))
         expect(allowsDesktopFallback(after: APIError.forbidden))
@@ -695,7 +706,125 @@ private actor MockAudioCapture: AudioCapturing {
         let play = history.first { $0.url?.path == "/v1/me/player/play" }
         let uris = try requestObject(require(play))["uris"] as? [String]
         expect(uris == ["spotify:track:one"])
-        expect(service.notice?.message.contains("couldn’t start") == true)
+        expect(service.notice?.message.contains("different song") == true)
+    }
+
+    func testLikedSongEmptyPlaybackDoesNotRetryOrClaimUnavailable() async throws {
+        await StubNetwork.shared.reset { _ in .init(status: 204) }
+        let (service, _, _) = fixture(); service.saved = [song]
+        let next = Track(id: "next", name: "Next", uri: "spotify:track:next", duration_ms: nil, artists: nil, album: nil)
+        service.saved.append(next)
+        await service.playLikedSong(song)
+        let history = await StubNetwork.shared.history()
+        let requests = history.filter { $0.url?.path == "/v1/me/player/play" }
+        expect(requests.count == 1)
+        expect(service.notice?.message.contains("hasn’t confirmed") == true)
+        expect(service.notice?.message.contains("unavailable") == false)
+        expect(service.player.playback?.item?.uri == song.uri)
+    }
+
+    func testLikedSongWaitsForDelayedPlayback() async throws {
+        let playing = #"{"is_playing":true,"item":{"id":"one","name":"First song","uri":"spotify:track:one"}}"#
+        await StubNetwork.shared.reset(playbackResponses: [.init(status: 204), .init(status: 204), .init(json: playing)])
+        let (service, _, _) = fixture(); service.saved = [song]
+        await service.playLikedSong(song)
+        let history = await StubNetwork.shared.history()
+        expect(history.filter { $0.url?.path == "/v1/me/player/play" }.count == 1)
+        expect(service.notice == nil)
+        expect(service.player.playback?.item?.uri == song.uri)
+    }
+
+    func testLikedSongFallsBackToAlbumWhenSpotifyStops() async throws {
+        let playing = #"{"is_playing":true,"item":{"id":"one","name":"First song","uri":"spotify:track:one"}}"#
+        await StubNetwork.shared.reset(playbackResponses: Array(repeating: .init(status: 204), count: 5) + [.init(json: playing)])
+        let (service, _, _) = fixture()
+        let album = Album(id: "album", name: "Album", uri: "spotify:album:album", images: nil, artists: nil)
+        let track = Track(id: "one", name: "First song", uri: "spotify:track:one", duration_ms: nil, artists: nil, album: album)
+        service.saved = [track]
+        await service.playLikedSong(track)
+        let requests = await StubNetwork.shared.history().filter { $0.url?.path == "/v1/me/player/play" }
+        expect(requests.count == 2)
+        if requests.count == 2 {
+            let first = try requestObject(requests[0]), fallback = try requestObject(requests[1])
+            expect(first["uris"] as? [String] == ["spotify:track:one"])
+            expect(fallback["context_uri"] as? String == "spotify:album:album")
+            expect((fallback["offset"] as? [String: String])?["uri"] == "spotify:track:one")
+        }
+        expect(service.notice?.message.contains("next song may differ") == true)
+    }
+
+    func testPrivateLikedPlaylistSyncPaginatesAndPlaysSelectedPosition() async throws {
+        func page(_ range: Range<Int>, next: String?) throws -> String {
+            let items = range.map { ["track": ["id": "s\($0)", "name": "Song", "uri": "spotify:track:s\($0)"]] }
+            let object: [String: Any] = ["items": items, "next": next as Any? ?? NSNull(), "total": 101]
+            return String(data: try JSONSerialization.data(withJSONObject: object), encoding: .utf8)!
+        }
+        let pages = ["0": try page(0..<50, next: "https://api.spotify.com/v1/me/tracks?offset=50"),
+                     "50": try page(50..<100, next: "https://api.spotify.com/v1/me/tracks?offset=100"),
+                     "100": try page(100..<101, next: nil)]
+        let playing = #"{"is_playing":true,"item":{"id":"s100","name":"Song","uri":"spotify:track:s100"}}"#
+        await StubNetwork.shared.reset { request in
+            let path = request.url?.path
+            if path == "/v1/me" { return .init(json: #"{"id":"account"}"#) }
+            if path == "/v1/me/tracks" {
+                let offset = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "offset" }?.value ?? "0"
+                return .init(json: pages[offset] ?? "")
+            }
+            if path == "/v1/me/playlists" { return .init(status: 201, json: #"{"id":"private123"}"#) }
+            if path == "/v1/playlists/private123/items" { return .init(json: #"{"snapshot_id":"snapshot"}"#) }
+            if path == "/v1/me/player" { return .init(json: playing) }
+            return .init(status: 204)
+        }
+        let (service, _, _) = fixture()
+        let synced = await service.syncLikedPlaylist()
+        expect(synced && service.likedPlaylistEnabled)
+        let track = Track(id: "s100", name: "Song", uri: "spotify:track:s100", duration_ms: nil, artists: nil, album: nil)
+        service.saved = [track]
+        await service.playLikedSong(track)
+        let history = await StubNetwork.shared.history()
+        let creation = try requestObject(require(history.first { $0.url?.path == "/v1/me/playlists" }))
+        expect(creation["public"] as? Bool == false)
+        let updates = history.filter { $0.url?.path == "/v1/playlists/private123/items" }
+        expect(updates.count == 2)
+        if updates.count == 2 {
+            expect(updates[0].httpMethod == "PUT" && updates[1].httpMethod == "POST")
+            let firstBatch = try requestObject(updates[0]), secondBatch = try requestObject(updates[1])
+            expect((firstBatch["uris"] as? [String])?.count == 100)
+            expect((secondBatch["uris"] as? [String]) == ["spotify:track:s100"])
+        }
+        let play = try requestObject(require(history.first { $0.url?.path == "/v1/me/player/play" }))
+        expect(play["context_uri"] as? String == "spotify:playlist:private123")
+        expect((play["offset"] as? [String: Int])?["position"] == 100)
+    }
+
+    func testLikedPlaylistDoesNotMutateWhenLibraryPaginationFails() async throws {
+        await StubNetwork.shared.reset { request in
+            if request.url?.path == "/v1/me" { return .init(json: #"{"id":"account"}"#) }
+            if request.url?.path == "/v1/me/tracks" {
+                if request.url?.query?.contains("offset=50") == true { return .init(status: 500) }
+                return .init(json: #"{"items":[{"track":{"id":"one","name":"Song","uri":"spotify:track:one"}}],"next":"https://api.spotify.com/v1/me/tracks?offset=50"}"#)
+            }
+            return .init(status: 204)
+        }
+        let (service, _, _) = fixture()
+        let synced = await service.syncLikedPlaylist()
+        let history = await StubNetwork.shared.history()
+        expect(!synced && !service.likedPlaylistEnabled)
+        expect(!history.contains { $0.httpMethod == "POST" || $0.httpMethod == "PUT" })
+    }
+
+    func testLikedPlaylistPermissionFailureOffersReconnect() async throws {
+        await StubNetwork.shared.reset { request in
+            if request.url?.path == "/v1/me" { return .init(json: #"{"id":"account"}"#) }
+            if request.url?.path == "/v1/me/tracks" { return .init(json: #"{"items":[{"track":{"id":"one","name":"Song","uri":"spotify:track:one"}}],"next":null}"#) }
+            if request.url?.path == "/v1/me/playlists" { return .init(status: 403) }
+            return .init(status: 204)
+        }
+        let (service, _, _) = fixture()
+        let synced = await service.syncLikedPlaylist()
+        expect(!synced && !service.likedPlaylistEnabled)
+        expect(service.recovery == .reconnect)
+        expect(service.error?.contains("private playlist") == true)
     }
 
     func testQueueAndPlaylistSelectionKeepTheirOrder() async throws {
@@ -1085,6 +1214,36 @@ private func require<T>(_ value: T?) throws -> T { guard let value else { throw 
         } catch { failures.append("testLikedSongVerifiesSingleTrackWhenShuffleCannotBeDisabled: \(error)") }
         do {
             let before = failures.count
+            try await checks.testLikedSongEmptyPlaybackDoesNotRetryOrClaimUnavailable()
+            if failures.count == before { passed += 1; print("PASS testLikedSongEmptyPlaybackDoesNotRetryOrClaimUnavailable") }
+        } catch { failures.append("testLikedSongEmptyPlaybackDoesNotRetryOrClaimUnavailable: \(error)") }
+        do {
+            let before = failures.count
+            try await checks.testLikedSongWaitsForDelayedPlayback()
+            if failures.count == before { passed += 1; print("PASS testLikedSongWaitsForDelayedPlayback") }
+        } catch { failures.append("testLikedSongWaitsForDelayedPlayback: \(error)") }
+        do {
+            let before = failures.count
+            try await checks.testLikedSongFallsBackToAlbumWhenSpotifyStops()
+            if failures.count == before { passed += 1; print("PASS testLikedSongFallsBackToAlbumWhenSpotifyStops") }
+        } catch { failures.append("testLikedSongFallsBackToAlbumWhenSpotifyStops: \(error)") }
+        do {
+            let before = failures.count
+            try await checks.testPrivateLikedPlaylistSyncPaginatesAndPlaysSelectedPosition()
+            if failures.count == before { passed += 1; print("PASS testPrivateLikedPlaylistSyncPaginatesAndPlaysSelectedPosition") }
+        } catch { failures.append("testPrivateLikedPlaylistSyncPaginatesAndPlaysSelectedPosition: \(error)") }
+        do {
+            let before = failures.count
+            try await checks.testLikedPlaylistDoesNotMutateWhenLibraryPaginationFails()
+            if failures.count == before { passed += 1; print("PASS testLikedPlaylistDoesNotMutateWhenLibraryPaginationFails") }
+        } catch { failures.append("testLikedPlaylistDoesNotMutateWhenLibraryPaginationFails: \(error)") }
+        do {
+            let before = failures.count
+            try await checks.testLikedPlaylistPermissionFailureOffersReconnect()
+            if failures.count == before { passed += 1; print("PASS testLikedPlaylistPermissionFailureOffersReconnect") }
+        } catch { failures.append("testLikedPlaylistPermissionFailureOffersReconnect: \(error)") }
+        do {
+            let before = failures.count
             try await checks.testQueueAndPlaylistSelectionKeepTheirOrder()
             if failures.count == before { passed += 1; print("PASS testQueueAndPlaylistSelectionKeepTheirOrder") }
         } catch { failures.append("testQueueAndPlaylistSelectionKeepTheirOrder: \(error)") }
@@ -1119,6 +1278,11 @@ private func require<T>(_ value: T?) throws -> T { guard let value else { throw 
             try await checks.testAllPlayerControlsUseTheirExpectedSpotifyCommands()
             if failures.count == before { passed += 1; print("PASS testAllPlayerControlsUseTheirExpectedSpotifyCommands") }
         } catch { failures.append("testAllPlayerControlsUseTheirExpectedSpotifyCommands: \(error)") }
+        do {
+            let before = failures.count
+            try await checks.testSuccessfulPlayerControlsIgnoreNonJSONResponseBodies()
+            if failures.count == before { passed += 1; print("PASS testSuccessfulPlayerControlsIgnoreNonJSONResponseBodies") }
+        } catch { failures.append("testSuccessfulPlayerControlsIgnoreNonJSONResponseBodies: \(error)") }
         do {
             let before = failures.count
             checks.testAmbiguousPlayerFailuresNeverRepeatNonIdempotentCommandsLocally()

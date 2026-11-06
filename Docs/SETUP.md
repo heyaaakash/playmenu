@@ -20,7 +20,12 @@ Authorization uses PKCE with a temporary callback listener bound to IPv4 loopbac
 | `user-modify-playback-state` | Play/pause, seek, skip, volume, shuffle/repeat, queue additions, and device transfers |
 | `user-library-read`, `user-library-modify` | Show liked songs, check hearts, and save/remove songs |
 | `playlist-read-private`, `playlist-read-collaborative` | Browse playlists your account can access |
+| `playlist-modify-private` | Create and update the optional private Liked Songs playback playlist |
 | `user-read-recently-played`, `user-top-read` | Show recent tracks and top tracks |
+
+## Liked Songs playback
+
+In Library → Liked Songs, choose **Set up Liked Songs playback** to create a private Spotify playlist maintained by PlayMenu. Reconnect Spotify and grant private playlist access if prompted. Sync reads all pages of Liked Songs and replaces the contents of that app-created playlist; manual edits to it are overwritten. Local or unsupported items cannot be added and are skipped. PlayMenu resyncs after library changes made in the app; use **Sync Liked Songs playlist** to pick up changes made elsewhere. Large libraries and interrupted syncs may take time. A failed sync may leave the private playlist partially updated; retry before playing from it.
 
 ## Common problems
 

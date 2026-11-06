@@ -28,7 +28,7 @@ The 1.4.4 build 10 OAuth and Liked Songs fixes compile and package locally; the 
 | Liked songs, Undo | Current save/check endpoints, rapid heart changes, rollback, stale-check handling | Account permissions and live library changes need checking |
 | Home and library | Paging/deduplication, snapshot restoration, preferences | Contents depend on Spotify app quota mode and access |
 | Search | Debounce, cancellation, stale-result protection | Results and live account restrictions need checking; no search-result pagination |
-| Queue / context continuation | Album/playlist offsets and ordered URI continuation | Liked Songs starts the selected track at its album URI offset; Queue continuation contains up to 99 following loaded tracks |
+| Queue / context continuation | Mocked private Liked Songs playlist creation, pagination, batching, permission failure, and selected-position playback; album/playlist offsets and ordered URI continuation | The optional private playlist needs a live Spotify permission, sync, selected-song, next-song, shuffle, and reconnect test. Manual changes to that playlist are overwritten on sync. Without setup, Liked Songs may fall back to album playback. Queue continuation contains up to 99 following loaded tracks. |
 | Device transfer | Mocked transfer progress and refresh | Real hardware availability, transfer, and restrictions need checking |
 | PKCE and Keychain | Source reviewed; no live authorization test recorded | Browser denial, callback port conflict, token persistence, and reconnect need real-account testing |
 | Desktop Spotify fallback | Disabled-fallback error path is tested | Real Automation allow/deny prompts and Apple Events need testing; basic controls only |

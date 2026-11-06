@@ -26,6 +26,8 @@ import Security
     @Published var loadingQueue = false
     @Published var loadingPlaylists = false
     @Published var loadingSaved = false
+    @Published private(set) var syncingLikedPlaylist = false
+    @Published private(set) var likedPlaylistEnabled = false
     @Published var detailTitle: String?
     @Published var detailTracks: [Track] = []
     @Published var detailLoading = false
@@ -40,7 +42,7 @@ import Security
     let preferences: AppPreferences
 
     private var callbackRedirect: String?
-    private let scopes = "user-read-playback-state user-modify-playback-state user-read-currently-playing user-library-read user-library-modify playlist-read-private playlist-read-collaborative user-read-recently-played user-top-read"
+    private let scopes = "user-read-playback-state user-modify-playback-state user-read-currently-playing user-library-read user-library-modify playlist-read-private playlist-read-collaborative playlist-modify-private user-read-recently-played user-top-read"
     private let session: URLSession
     private let cache: LibraryCache
     private let defaults: UserDefaults
@@ -57,6 +59,11 @@ import Security
     private var listenerStartTask: Task<Void, Never>?
     private var authorizationTask: Task<Void, Never>?
     private var authorizationRevision = 0
+    private var playbackIntentRevision = 0
+    private var likedPlaylistURIs: [String] = []
+    private var likedPlaylistID: String?
+    private var likedPlaylistAccountID: String?
+    private var likedPlaylistReady = false
     private var searchTask: Task<Void, Never>?
     private var refreshTask: Task<TokenResponse, Error>?
     private var playbackTask: Task<Playback?, Error>?
@@ -263,6 +270,7 @@ import Security
         profile = nil; playlists = []; saved = []; recent = []; topTracks = []; queue = []; search = nil
         savedChecks = [:]; savedCheckDates = [:]; pendingSaves = []; saveCounts = [:]; confirmedSaved = [:]
         resolvedTrackURIs = [:]; unavailableTrackURIs = []
+        likedPlaylistID = nil; likedPlaylistAccountID = nil; likedPlaylistURIs = []; likedPlaylistReady = false; likedPlaylistEnabled = false; syncingLikedPlaylist = false
         mutationCounts = [:]; confirmedPlayback = [:]; commandTail = nil
         details = [:]; cachedDate = nil; devices = []; notice = nil; error = nil; offline = false
         playlistNext = nil; savedNext = nil; closeDetail(); player.transferringID = nil
@@ -338,6 +346,9 @@ import Security
         }
         if offline { offline = false; if recovery == .retry { error = nil } }
         if status == 204 || data.isEmpty { return nil }
+        // Player commands require only the successful status; Spotify can
+        // return a non-JSON body even though the command was accepted.
+        if T.self == Empty.self { return nil }
         let value = try await decode(T.self, data)
         guard epoch == sessionRevision else { throw CancellationError() }
         return value
@@ -393,7 +404,17 @@ import Security
         if epoch == sessionRevision, !offline { persist() }
     }
     private func refreshProfile(_ epoch: Int) async {
-        do { let value: Profile? = try await request("/me"); if epoch == sessionRevision { profile = value; cachedDate = Date() } } catch { report(error) }
+        do {
+            let value: Profile? = try await request("/me")
+            if epoch == sessionRevision {
+                profile = value; cachedDate = Date()
+                if let id = value?.id {
+                    let stored = defaults.string(forKey: likedPlaylistKey(accountID: id))
+                    if likedPlaylistAccountID != id { likedPlaylistReady = false; likedPlaylistURIs = [] }
+                    likedPlaylistAccountID = id; likedPlaylistID = stored; likedPlaylistEnabled = stored != nil
+                }
+            }
+        } catch { report(error) }
     }
     private func refreshPlaylists(_ epoch: Int) async {
         do {
@@ -411,6 +432,7 @@ import Security
             let page: Page<SavedTrack>? = try await request("/me/tracks", query: [.init(name: "limit", value: "30")])
             if epoch == sessionRevision, let page {
                 let tracks = page.items.map(\.track), hadExtra = saved.count > 30
+                if likedPlaylistReady && Array(likedPlaylistURIs.prefix(tracks.count)) != tracks.compactMap(\.uri) { likedPlaylistReady = false }
                 let changed = saved.filter { versions[$0.stableID] != saveVersions[$0.stableID] }
                 saved = merge(changed, merge(tracks, hadExtra ? saved : [])).filter { track in
                     let locallyChanged = versions[track.stableID] != saveVersions[track.stableID] || pendingSaves.contains(track.stableID)
@@ -657,13 +679,103 @@ import Security
         if mutationCounts[mutation.field] == 0 { confirmedPlayback[mutation.field] = nil }
     }
     func togglePlayback() async {
+        playbackIntentRevision += 1
         let playing = player.playback?.is_playing == true
         let mutation = optimistic(.playback) { $0.is_playing = !playing }
         complete(mutation, success: await send(playing ? "/me/player/pause" : "/me/player/play", method: "PUT", localFallback: playing ? "pause" : "play"))
     }
+    private func likedPlaylistKey(accountID: String) -> String { "likedPlaylist.\(clientID).\(accountID)" }
+    private struct CreatedPlaylist: Decodable, Sendable { let id: String }
+    private struct PlaylistSnapshot: Decodable, Sendable { let snapshot_id: String? }
+
+    // Only this app-created playlist is replaced. The explicit setup button is
+    // the user's consent to create and keep that private playlist synchronized.
+    @discardableResult func syncLikedPlaylist() async -> Bool {
+        guard connected, !syncingLikedPlaylist else { return false }
+        let epoch = sessionRevision, versions = saveVersions
+        guard pendingSaves.isEmpty else { showNotice("Wait for the current library change to finish, then sync.", icon: "exclamationmark.triangle"); return false }
+        syncingLikedPlaylist = true; defer { if epoch == sessionRevision { syncingLikedPlaylist = false } }
+        likedPlaylistReady = false
+        do {
+            let current: Profile? = try await request("/me")
+            guard epoch == sessionRevision, let account = current?.id, !account.isEmpty else {
+                throw APIError.message("Could not identify your Spotify account. Try again.")
+            }
+            let key = likedPlaylistKey(accountID: account)
+            var ids: [String] = [], next: String? = "/me/tracks?limit=50", skipped = 0
+            var visited = Set<String>()
+            while let path = next {
+                guard epoch == sessionRevision, visited.insert(path).inserted else { throw APIError.message("Could not finish loading Liked Songs. Try again.") }
+                guard let page: Page<SavedTrack> = try await request(path) else { throw APIError.message("Could not finish loading Liked Songs. Try again.") }
+                for item in page.items {
+                    if let uri = item.track.uri, uri.hasPrefix("spotify:track:") { ids.append(uri) }
+                    else { skipped += 1 }
+                }
+                next = page.next
+            }
+            guard epoch == sessionRevision else { return false }
+            guard versions == saveVersions, pendingSaves.isEmpty else { throw APIError.message("Liked Songs changed during sync. Please sync again.") }
+            var playlistID = defaults.string(forKey: key)
+            if playlistID == nil {
+                guard !ids.isEmpty else { throw APIError.message("No Spotify tracks are available to sync from Liked Songs.") }
+                let data = try JSONSerialization.data(withJSONObject: ["name": "PlayMenu Liked Songs", "public": false, "description": "Private playlist maintained by PlayMenu. Changes may be overwritten during sync."])
+                guard let created: CreatedPlaylist = try await request("/me/playlists", method: "POST", body: data), !created.id.isEmpty else { throw APIError.message("Spotify did not return the new playlist. Try again.") }
+                guard epoch == sessionRevision else { return false }
+                playlistID = created.id; defaults.set(created.id, forKey: key)
+            }
+            guard let playlistID, !playlistID.isEmpty, playlistID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { throw APIError.message("Invalid synced playlist ID.") }
+            likedPlaylistAccountID = account; likedPlaylistID = playlistID; likedPlaylistEnabled = true
+            if ids.isEmpty {
+                let body = try JSONSerialization.data(withJSONObject: ["uris": [String]()])
+                let _: PlaylistSnapshot? = try await request("/playlists/\(playlistID)/items", method: "PUT", body: body)
+            }
+            for start in stride(from: 0, to: ids.count, by: 100) {
+                guard epoch == sessionRevision else { return false }
+                let body = try JSONSerialization.data(withJSONObject: ["uris": Array(ids[start..<min(start + 100, ids.count)])])
+                let _: PlaylistSnapshot? = try await request("/playlists/\(playlistID)/items", method: start == 0 ? "PUT" : "POST", body: body)
+            }
+            guard epoch == sessionRevision else { return false }
+            guard versions == saveVersions, pendingSaves.isEmpty else { throw APIError.message("Liked Songs changed during sync. Please sync again.") }
+            likedPlaylistURIs = ids; likedPlaylistReady = true; error = nil
+            let message = skipped > 0 ? "Synced Liked Songs; \(skipped) local or unsupported tracks were skipped." : "Liked Songs synced to your private playlist."
+            showNotice(message, icon: "checkmark.circle.fill")
+            return true
+        } catch {
+            guard epoch == sessionRevision else { return false }
+            if case APIError.forbidden = error {
+                self.error = "Reconnect Spotify and allow private playlist editing to sync Liked Songs."
+                recovery = .reconnect
+            } else { report(error) }
+            return false
+        }
+    }
+
     func playLikedSong(_ track: Track) async {
+        playbackIntentRevision += 1
+        let selectionRevision = playbackIntentRevision, epoch = sessionRevision
         guard let playableTrack = await resolvePlayableTrack(track) else {
             showNotice("This song isn’t available to play in your Spotify market.", icon: "exclamationmark.triangle")
+            return
+        }
+        guard selectionRevision == playbackIntentRevision, epoch == sessionRevision else { return }
+        if likedPlaylistEnabled {
+            if !likedPlaylistReady, !(await syncLikedPlaylist()) { return }
+            guard selectionRevision == playbackIntentRevision, epoch == sessionRevision else { return }
+            guard let id = likedPlaylistID, let originalURI = track.uri,
+                  let position = likedPlaylistURIs.firstIndex(of: originalURI) else {
+                showNotice("This song isn’t in the synced playlist yet. Sync Liked Songs and try again.", icon: "exclamationmark.triangle")
+                return
+            }
+            let restoreShuffle = player.playback?.shuffle_state == true
+            let disabled = restoreShuffle ? await setShuffleState(false) : true
+            guard selectionRevision == playbackIntentRevision, epoch == sessionRevision else { return }
+            let started = await play(playableTrack, contextURI: "spotify:playlist:\(id)", contextPosition: position)
+            let startedRevision = selectionRevision + 1
+            guard startedRevision == playbackIntentRevision, epoch == sessionRevision else { return }
+            let confirmed = started ? await confirmPlaybackStarted(playableTrack) : nil
+            guard startedRevision == playbackIntentRevision, epoch == sessionRevision else { return }
+            if restoreShuffle && disabled { _ = await setShuffleState(true) }
+            if started && confirmed != true { showNotice("Spotify hasn’t confirmed the selected song. Check your active device.", icon: "exclamationmark.triangle") }
             return
         }
         let following: [Track]
@@ -681,21 +793,40 @@ import Security
         else { shuffleDisabled = true }
         // If Spotify refuses the shuffle change, a one-item start avoids its
         // shuffle order from replacing the user’s selected track.
+        guard selectionRevision == playbackIntentRevision, epoch == sessionRevision else { return }
         let selectedQueue = shuffleDisabled ? following : []
         let started = await play(playableTrack, following: selectedQueue)
         guard started else {
             if restoreShuffle && shuffleDisabled { _ = await setShuffleState(true) }
             return
         }
+        let startedRevision = selectionRevision + 1
+        guard startedRevision == playbackIntentRevision, epoch == sessionRevision else { return }
+        var expectedRevision = startedRevision
         var confirmed = await confirmPlaybackStarted(playableTrack)
-        if confirmed == false, !selectedQueue.isEmpty {
-            // The list can be rejected or reordered by Spotify; retry the exact URI alone.
-            let retried = await play(playableTrack, following: [])
-            if retried { confirmed = await confirmPlaybackStarted(playableTrack) }
+        guard startedRevision == playbackIntentRevision, epoch == sessionRevision else { return }
+        var usedAlbumFallback = false
+        if confirmed != true, let album = playableTrack.album,
+           let albumURI = album.uri ?? album.id.map({ "spotify:album:\($0)" }) {
+            // Some Spotify clients accept a URI list but stop without playing it.
+            // Album context uses Spotify's documented offset for the selected song.
+            expectedRevision += 1
+            if await play(playableTrack, contextURI: albumURI) {
+                confirmed = await confirmPlaybackStarted(playableTrack)
+                usedAlbumFallback = confirmed == true
+            }
+        } else if confirmed == false, !selectedQueue.isEmpty {
+            expectedRevision += 1
+            if await play(playableTrack, following: []) { confirmed = await confirmPlaybackStarted(playableTrack) }
         }
+        guard expectedRevision == playbackIntentRevision, epoch == sessionRevision else { return }
         if restoreShuffle && shuffleDisabled { _ = await setShuffleState(true) }
-        if confirmed == false {
-            showNotice("Spotify couldn’t start that song. It may be unavailable on this device.", icon: "exclamationmark.triangle")
+        if usedAlbumFallback {
+            showNotice("Playing from the album. The next song may differ from Liked Songs.", icon: "music.note")
+        } else if confirmed == false {
+            showNotice("Spotify started a different song. Try selecting this song again.", icon: "exclamationmark.triangle")
+        } else if confirmed == nil {
+            showNotice("Spotify hasn’t confirmed playback. Check your active device and try again.", icon: "exclamationmark.triangle")
         }
     }
     private func resolvePlayableTrack(_ track: Track) async -> Track? {
@@ -724,18 +855,24 @@ import Security
         Track(id: track.id, name: track.name, uri: uri, duration_ms: track.duration_ms, artists: track.artists, album: track.album)
     }
     private func confirmPlaybackStarted(_ track: Track) async -> Bool? {
-        for _ in 0..<3 {
-            try? await Task.sleep(for: .milliseconds(300))
+        var observedDifferentTrack = false
+        for _ in 0..<5 {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return nil }
             do {
                 guard let current: Playback = try await request("/me/player"), let currentTrack = current.item else { continue }
-                player.apply(current)
-                if currentTrack.stableID == track.stableID || (track.uri != nil && currentTrack.uri == track.uri) { return true }
+                if currentTrack.stableID == track.stableID || (track.uri != nil && currentTrack.uri == track.uri) {
+                    guard current.is_playing else { continue }
+                    player.apply(current)
+                    return true
+                }
+                observedDifferentTrack = true
             } catch {
                 report(error)
                 return nil
             }
         }
-        return false
+        return observedDifferentTrack ? false : nil
     }
     private func setShuffleState(_ enabled: Bool) async -> Bool {
         let mutation = optimistic(.shuffle) { $0.shuffle_state = enabled }
@@ -744,6 +881,7 @@ import Security
         return success
     }
     @discardableResult func play(_ track: Track, contextURI: String? = nil, following: [Track]? = nil, contextPosition: Int? = nil) async -> Bool {
+        playbackIntentRevision += 1
         guard let uri = track.uri else { return false }
         let original = player.playback
         let mutation = optimistic(.playback) { $0.item = track; $0.progress_ms = 0; $0.is_playing = true }
@@ -771,6 +909,7 @@ import Security
     func next() async { await skipTrack(path: "/me/player/next", fallback: "next track") }
     func previous() async { await skipTrack(path: "/me/player/previous", fallback: "previous track") }
     private func skipTrack(path: String, fallback: String) async {
+        playbackIntentRevision += 1
         // A playback read started before the skip can return the old paused
         // track after the command completes. Invalidate it before issuing skip.
         player.revision += 1
@@ -812,6 +951,7 @@ import Security
     }
     func setSaved(_ track: Track, to desired: Bool) async {
         guard let uri = track.uri, connected else { return }
+        likedPlaylistReady = false
         let original = player.isSaved(track), oldList = saved
         let epoch = sessionRevision, key = track.stableID
         let version = saveVersions[key, default: 0] + 1; saveVersions[key] = version

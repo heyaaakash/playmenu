@@ -20,6 +20,10 @@ The app uses `accounts.spotify.com` for authorization/tokens, `api.spotify.com` 
 
 There is no application-owned telemetry, advertising, or remote crash-reporting service in the source. Spotify and your browser/OS may keep their own records. Avoid sending tokens, Client IDs, raw authorization callbacks, private playlist contents, or personal device names in issue reports.
 
+## Liked Songs playlist
+
+If you choose setup in Library, PlayMenu creates and updates a private Spotify playlist containing your liked Spotify tracks. Its contents are replaced during sync; local or unsupported tracks are skipped. The playlist remains in Spotify after disconnect or uninstall and can be removed there. PlayMenu stores its ID per Spotify account and Client ID in local preferences.
+
 ## Disconnect or uninstall
 
 1. Choose **Disconnect Spotify** before quitting to remove the token and library snapshot. This does not revoke the app’s access at Spotify.

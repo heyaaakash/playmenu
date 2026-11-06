@@ -6,6 +6,12 @@ Version metadata comes from `VERSION` and `BUILD_NUMBER`. Future immutable relea
 
 - (none)
 
+## 1.4.6 — 2026-11-06, build 15
+
+- Added an optional private Spotify playlist that syncs Liked Songs and starts playback at the selected song.
+- Added album-context fallback when Spotify accepts a liked-song list but does not start it.
+- Fixed false errors after successful Next and Previous commands that return a non-JSON response.
+
 ## 1.4.5 — 2026-11-06, build 14
 
 - Use the Spotify-approved loopback callback at `http://127.0.0.1:43829/callback`, with a clear message if the port is unavailable.

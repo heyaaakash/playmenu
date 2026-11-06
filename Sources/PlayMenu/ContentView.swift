@@ -168,6 +168,15 @@ private struct BrowseArea: View {
         }
         if preferences.filter == .all || preferences.filter == .songs {
             SectionLabel(title: "Liked songs · \(spotify.saved.count) loaded", icon: "heart.fill").padding(.top, 5)
+            VStack(alignment: .leading, spacing: 5) {
+                Button {
+                    Task { await spotify.syncLikedPlaylist() }
+                } label: {
+                    HStack { if spotify.syncingLikedPlaylist { ProgressView().controlSize(.small) }; Text(spotify.syncingLikedPlaylist ? "Syncing Liked Songs…" : spotify.likedPlaylistEnabled ? "Sync Liked Songs playlist" : "Set up Liked Songs playback"); Spacer(); Image(systemName: "arrow.triangle.2.circlepath") }
+                }.buttonStyle(.plain).disabled(spotify.syncingLikedPlaylist).foregroundStyle(Palette.green).font(.system(size: 11, weight: .semibold))
+                Text("Creates a private Spotify playlist. Sync overwrites edits; local files are skipped. Reconnect Spotify to grant playlist access.")
+                    .font(.system(size: 10)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+            }.padding(10).background(Palette.raised, in: RoundedRectangle(cornerRadius: 11))
             ForEach(spotify.saved, id: \.stableID) { track in
                 TrackRow(track: track, playAction: { await spotify.playLikedSong(track) }).id("library:saved:\(track.stableID)")
             }

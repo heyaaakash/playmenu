@@ -70,7 +70,14 @@ struct Device: Codable, Identifiable, Equatable, Sendable {
 }
 struct DeviceList: Decodable, Sendable { let devices: [Device] }
 struct QueueResult: Decodable, Sendable { let queue: [Track] }
-struct Profile: Codable, Sendable { let display_name: String?; let product: String? }
+struct Profile: Codable, Sendable {
+    let display_name: String?
+    let product: String?
+    let id: String?
+    init(display_name: String?, product: String?, id: String? = nil) {
+        self.display_name = display_name; self.product = product; self.id = id
+    }
+}
 struct TokenResponse: Decodable, Sendable { let access_token: String; let token_type: String; let expires_in: Int; let refresh_token: String? }
 
 enum APIError: LocalizedError {
