@@ -121,6 +121,9 @@ import Security
         }
     }
 
+    static let redirectURI = "http://127.0.0.1:43829/callback"
+    private static let callbackPort = NWEndpoint.Port(rawValue: 43829)!
+
     func connect() {
         guard !connecting else { return }
         let trimmed = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -144,8 +147,8 @@ import Security
         let callback: NWListener
         do {
             let parameters = NWParameters.tcp
-            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-            callback = try NWListener(using: parameters, on: .any)
+            parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: Self.callbackPort)
+            callback = try NWListener(using: parameters)
         } catch {
             self.error = "Could not start Spotify sign-in. Please try again."
             connecting = false; self.verifier = nil; expectedState = nil
@@ -178,7 +181,8 @@ import Security
                 Task { @MainActor in
                     guard revision == self.authorizationRevision, self.connecting, self.listener === callback,
                           let port = callback.port?.rawValue, port != 0 else { return }
-                    let redirect = "http://127.0.0.1:\(port)/callback"
+                    guard port == Self.callbackPort.rawValue else { return }
+                    let redirect = Self.redirectURI
                     self.callbackRedirect = redirect
                     var components = URLComponents(string: "https://accounts.spotify.com/authorize")!
                     components.queryItems = [
@@ -197,7 +201,7 @@ import Security
             case .failed:
                 Task { @MainActor in
                     guard revision == self.authorizationRevision else { return }
-                    self.error = "Could not open the Spotify callback. Try again."
+                    self.error = "Could not open port 43829 for Spotify sign-in. Close the app using it and try again."
                     self.cancelConnection()
                 }
             default: break

@@ -235,6 +235,18 @@ enum PopoverLayout {
     private func handleKey(_ event: NSEvent) -> NSEvent? {
         guard visiblePopover != nil else { return event }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers == .command, NSApp.keyWindow?.firstResponder is NSTextView,
+           let key = event.charactersIgnoringModifiers?.lowercased() {
+            let action: Selector?
+            switch key {
+            case "a": action = #selector(NSText.selectAll(_:))
+            case "c": action = #selector(NSText.copy(_:))
+            case "v": action = #selector(NSText.paste(_:))
+            case "x": action = #selector(NSText.cut(_:))
+            default: action = nil
+            }
+            if let action, NSApp.sendAction(action, to: nil, from: nil) { return nil }
+        }
         if modifiers.contains(.command), event.charactersIgnoringModifiers == "," {
             preferences.showingDevices = false
             preferences.showingSettings = true

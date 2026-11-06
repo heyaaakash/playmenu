@@ -306,6 +306,8 @@ private struct RecoveryBanner: View {
 private struct OnboardingView: View {
     @EnvironmentObject private var spotify: SpotifyService
     @EnvironmentObject private var preferences: AppPreferences
+    @State private var copiedRedirect = false
+    private let redirectURI = SpotifyService.redirectURI
     var body: some View {
         VStack(spacing: 15) {
             HStack { Spacer(); IconButton(icon: "gearshape", label: "Settings") { preferences.showingSettings = true } }
@@ -315,8 +317,22 @@ private struct OnboardingView: View {
             Text("A little home for Spotify in your menu bar.").font(.system(size: 12)).foregroundStyle(Palette.muted)
             VStack(alignment: .leading, spacing: 8) {
                 Text("SPOTIFY CLIENT ID").font(.system(size: 9, weight: .bold)).tracking(1.5).foregroundStyle(Palette.green)
-                TextField("Paste your Spotify app Client ID", text: $spotify.clientID).textFieldStyle(.plain).padding(12).background(Palette.raised, in: RoundedRectangle(cornerRadius: 11))
-                Text("Add http://127.0.0.1/callback (without a port) to your developer app's redirect URIs.").font(.system(size: 11)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    TextField("Paste your Spotify app Client ID", text: $spotify.clientID).textFieldStyle(.plain)
+                    Button("Paste") {
+                        if let value = NSPasteboard.general.string(forType: .string) { spotify.clientID = value.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    }.buttonStyle(.plain).foregroundStyle(Palette.green).accessibilityLabel("Paste Spotify Client ID")
+                }.padding(12).background(Palette.raised, in: RoundedRectangle(cornerRadius: 11))
+                Text("Add this redirect URI to your Spotify developer app:").font(.system(size: 11)).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Text(redirectURI).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    Button(copiedRedirect ? "Copied" : "Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(redirectURI, forType: .string)
+                        copiedRedirect = true
+                    }.buttonStyle(.plain).foregroundStyle(Palette.green).accessibilityLabel("Copy redirect URI")
+                }
             }.padding(.top, 17)
             Button { spotify.connect() } label: { HStack { if spotify.connecting { ProgressView().controlSize(.small) }; Text(spotify.connecting ? "Connecting…" : "Connect Spotify"); Image(systemName: "arrow.right") }.font(.system(size: 13, weight: .bold)).foregroundStyle(Palette.onAccent).frame(maxWidth: .infinity).padding(14).background(Palette.green, in: Capsule()) }.buttonStyle(PressStyle()).disabled(spotify.connecting)
             if spotify.connecting { Button("Cancel") { spotify.cancelConnection() }.buttonStyle(.plain).font(.caption).foregroundStyle(Palette.muted) }

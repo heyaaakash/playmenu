@@ -6,6 +6,11 @@ Version metadata comes from `VERSION` and `BUILD_NUMBER`. Future immutable relea
 
 - (none)
 
+## 1.4.5 — 2026-11-06, build 14
+
+- Use the Spotify-approved loopback callback at `http://127.0.0.1:43829/callback`, with a clear message if the port is unavailable.
+- Add copy and paste controls to setup and support standard text editing shortcuts in the menu bar app.
+
 ## 1.4.4 — 2026-10-10, build 13 (replaces build 10)
 
 - Renamed the app to PlayMenu and regenerated the app bundle, icon resources, packages, and screenshots while preserving the 1.4.4 version. Existing Spotify sign-in, preferences, and local library data remain compatible.

@@ -83,7 +83,7 @@ Spotify’s development-mode rules restrict some playlist content. Sign-in, acti
 ## Connect and use
 
 1. Build and open PlayMenu, then click its music-note icon in the menu bar.
-2. Create a Spotify developer app and register **`http://127.0.0.1/callback`** as its redirect URI (without a port).
+2. Create a Spotify developer app and register **`http://127.0.0.1:43829/callback`** as its redirect URI.
 3. Paste its **Client ID** into PlayMenu and choose **Connect Spotify**. Approve access in your browser.
 4. Start music in Spotify on your Mac or another device, then use PlayMenu’s player.
 
